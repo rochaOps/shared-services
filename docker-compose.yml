@@ -1,0 +1,25 @@
+networks:
+  shared_net:
+    name: shared_net
+    external: true
+
+services:
+  telegram-dispatcher:
+    build: ./dispatcher
+    container_name: telegram-dispatcher
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Asia/Tokyo
+    networks:
+      - shared_net
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import telegram; print('ok')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
