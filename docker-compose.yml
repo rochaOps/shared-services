@@ -23,3 +23,35 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  shared-ollama:
+    image: ollama/ollama:0.23.0
+    container_name: shared-ollama
+    restart: unless-stopped
+    volumes:
+      - /home/luis/shared-services/ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      TZ: Asia/Tokyo
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_NUM_PARALLEL: "1"
+    networks:
+      - shared_net
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/11434"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s

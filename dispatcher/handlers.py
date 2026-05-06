@@ -15,6 +15,7 @@ PHONE_RE = re.compile(r"^\+?\d[\d\s\-]{7,15}$")
 
 HELP_TEXT = """Comandos disponíveis:
 
+/ask <pergunta> — pergunta ao assistente de IA (Ollama)
 /status — estado atual do agente
 /perfil — perfil configurado
 /historico — histórico de chamadas
@@ -224,12 +225,23 @@ async def cmd_retentar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.reply_text(f"Erro ao retentar: {e}")
 
 
-async def _cmd_ask(text: str) -> str:
+async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    text = " ".join(context.args) if context.args else ""
+    if not text:
+        await update.message.reply_text("Uso: /ask <pergunta>")
+        return
+    reply = await _ollama_ask(text)
+    await update.message.reply_text(reply)
+
+
+async def _ollama_ask(text: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(
                 f"{OLLAMA_URL}/api/generate",
-                json={"model": "llama3.2", "prompt": text, "stream": False},
+                json={"model": "llama3:latest", "prompt": text, "stream": False},
             )
             r.raise_for_status()
             return r.json().get("response", "(sem resposta)")
@@ -239,6 +251,10 @@ async def _cmd_ask(text: str) -> str:
     except httpx.HTTPError as e:
         logger.error("ollama error: %s", e)
         return f"Erro no assistente de IA: {e}"
+
+
+# keep backward-compat alias used internally
+_cmd_ask = _ollama_ask
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
