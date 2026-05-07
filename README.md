@@ -6,7 +6,7 @@
 
 ## What it does
 
-`shared-services` is the backbone of a self-hosted AI stack. Instead of each application running its own LLM instance (expensive in VRAM and memory), this project provides a single shared Ollama instance running on an RTX 3080 — accessible to all applications on the `shared_net` Docker network.
+`shared-services` provides a single shared Ollama instance running on a GPU — accessible to all applications on the `shared_net` Docker network.
 
 It also runs a Telegram bot dispatcher that routes commands to the appropriate backend agents.
 
@@ -17,23 +17,15 @@ It also runs a Telegram bot dispatcher that routes commands to the appropriate b
 ```
 shared_net (Docker bridge network)
       │
-      ├──► shared-ollama (Ollama 0.23.0)
-      │       ├── RTX 3080 — GPU inference, 33/33 layers
-      │       ├── llama3:latest (8B, 4.7 GB)
-      │       └── nomic-embed-text (274 MB — RAG embeddings)
+      ├──► shared-ollama (Ollama)
+      │       ├── GPU inference
+      │       ├── llama3:latest (8B)
+      │       └── nomic-embed-text (RAG embeddings)
       │
       └──► telegram-dispatcher
               ├── /ask  → queries shared-ollama
               └── routes commands to connected agents
 ```
-
-### Connected Services
-
-| Service | How it connects |
-|---------|----------------|
-| `eletrica-pro` | `OLLAMA_HOST=http://shared-ollama:11434` via `shared_net` |
-| `agente-ligacao` | joins `shared_net` for dispatcher communication |
-| `open-webui` | uses `shared-ollama` as its LLM backend |
 
 ---
 
@@ -51,9 +43,7 @@ shared_net (Docker bridge network)
 
 | Component | Technology |
 |-----------|-----------|
-| LLM runtime | Ollama 0.23.0 |
-| GPU | NVIDIA RTX 3080 (NVIDIA Container Toolkit) |
-| Models | llama3:latest, nomic-embed-text |
+| LLM runtime | Ollama |
 | Bot framework | python-telegram-bot |
 | Infra | Docker Compose + `shared_net` external network |
 
@@ -119,7 +109,7 @@ networks:
 
 ## Status
 
-Running 24/7 on a self-hosted Debian 12 server. RTX 3080 dedicated to LLM inference (separate GTX 660 handles display output).
+Running 24/7 on a self-hosted Linux server.
 
 ---
 
