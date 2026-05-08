@@ -11,7 +11,20 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 AGENTE_URL = os.environ.get("AGENTE_URL", "http://agente-ligacao:8100")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://shared-ollama:11434")
 
-PHONE_RE = re.compile(r"^\+?\d[\d\s\-]{7,15}$")
+# Detection regex: liberal — catches anything that looks like a phone number in chat.
+# Accepts digits, +, spaces, dashes, parens so the user can type naturally.
+_PHONE_DETECT_RE = re.compile(r"^[\+\d][\d\s\-\(\)]{6,14}$")
+# Post-sanitize validation: mirrors call_manager._PHONE_RE exactly (^[\d\+]{7,15}$).
+_PHONE_VALID_RE = re.compile(r"^\+?[\d]{7,15}$")
+
+
+def sanitize_phone(raw: str) -> str:
+    """Strip spaces, dashes, parens then validate. Raises ValueError on invalid."""
+    cleaned = re.sub(r"[\s\-\(\)]", "", raw)
+    if not _PHONE_VALID_RE.match(cleaned):
+        raise ValueError(f"Número inválido: {raw!r}")
+    return cleaned
+
 
 HELP_TEXT = """Comandos disponíveis:
 
@@ -26,11 +39,14 @@ HELP_TEXT = """Comandos disponíveis:
 /transcricao — transcrição da última chamada
 /desligar — encerra chamada ativa
 /limpar — limpa histórico
-/skip — pula item da fila
+/skip — pula avaliação de contexto e liga direto
 /retentar — retenta última chamada
 
 Envie um número de telefone para iniciar uma chamada.
 Qualquer outro texto é enviado ao assistente de IA."""
+
+# chat_id → {"phone": str, "context": str}
+_pending_calls: dict[int, dict] = {}
 
 
 def _authorized(update: Update) -> bool:
@@ -73,6 +89,42 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 
+async def _check_business_hours(client: httpx.AsyncClient) -> bool:
+    """Returns True if within business hours. Defaults to True on HTTP error (fail-open)."""
+    try:
+        r = await client.get(f"{AGENTE_URL}/api/bot/status", timeout=10.0)
+        r.raise_for_status()
+        return bool(r.json().get("business_hours", True))
+    except httpx.HTTPError as e:
+        logger.warning("business_hours check failed (allowing call): %s", e)
+        return True
+
+
+async def _start_call(chat_id: int, phone: str, context: str, update: Update) -> None:
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        if not await _check_business_hours(client):
+            await update.message.reply_text(
+                "Fora do horário comercial. A ligação não foi iniciada."
+            )
+            return
+        try:
+            r = await client.post(
+                f"{AGENTE_URL}/api/bot/call/start",
+                json={"phone_number": phone, "context": context},
+            )
+            r.raise_for_status()
+            data = r.json()
+            reply = data if isinstance(data, str) else _fmt_json(data)
+            await update.message.reply_text(reply, parse_mode="Markdown")
+        except httpx.HTTPStatusError as e:
+            detail = e.response.json().get("detail", str(e)) if e.response.content else str(e)
+            logger.error("call/start error: %s", e)
+            await update.message.reply_text(f"Erro ao iniciar ligacao: {detail}")
+        except httpx.HTTPError as e:
+            logger.error("call/start error: %s", e)
+            await update.message.reply_text(f"Erro ao iniciar ligacao: {e}")
+
+
 async def cmd_ligar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return
@@ -84,9 +136,9 @@ async def cmd_ligar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    phone_raw = args[0]
-    phone = re.sub(r"[\s\-]", "", phone_raw)
-    if not re.match(r"^\+?\d{8,15}$", phone):
+    try:
+        phone = sanitize_phone(args[0])
+    except ValueError:
         await update.message.reply_text(
             "Numero invalido. Exemplo: `/ligar +5511999999999 agendar consulta`",
             parse_mode="Markdown",
@@ -94,24 +146,30 @@ async def cmd_ligar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     call_context = " ".join(args[1:]).strip() or "ligar"
+    chat_id = update.effective_chat.id
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            r = await client.post(
-                f"{AGENTE_URL}/api/bot/call/start",
-                json={"phone_number": phone, "context": call_context},
+            r = await client.get(
+                f"{AGENTE_URL}/api/bot/evaluate",
+                params={"phone": phone, "context": call_context},
             )
             r.raise_for_status()
             data = r.json()
-            reply = data if isinstance(data, str) else _fmt_json(data)
-            await update.message.reply_text(reply, parse_mode="Markdown")
-        except httpx.HTTPStatusError as e:
-            detail = e.response.json().get("detail", str(e)) if e.response.content else str(e)
-            logger.error("ligar error: %s", e)
-            await update.message.reply_text(f"Erro ao iniciar ligacao: {detail}")
         except httpx.HTTPError as e:
-            logger.error("ligar error: %s", e)
-            await update.message.reply_text(f"Erro ao iniciar ligacao: {e}")
+            logger.warning("evaluate error (prosseguindo sem avaliação): %s", e)
+            data = {"sufficient": True, "question": None}
+
+    if data.get("sufficient", True):
+        await _start_call(chat_id, phone, call_context, update)
+    else:
+        _pending_calls[chat_id] = {"phone": phone, "context": call_context}
+        question = data.get("question") or "Pode fornecer mais detalhes sobre o objetivo da ligação?"
+        await update.message.reply_text(
+            f"Contexto insuficiente.\n\n{question}\n\n"
+            "_(Responda com mais detalhes, ou use /skip para ligar assim mesmo)_",
+            parse_mode="Markdown",
+        )
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -244,14 +302,13 @@ async def cmd_limpar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            r = await client.post(f"{AGENTE_URL}/api/bot/skip")
-            r.raise_for_status()
-            await update.message.reply_text("Item pulado.")
-        except httpx.HTTPError as e:
-            logger.error("skip error: %s", e)
-            await update.message.reply_text(f"Erro ao pular: {e}")
+    chat_id = update.effective_chat.id
+    pending = _pending_calls.pop(chat_id, None)
+    if pending is None:
+        await update.message.reply_text("Nenhuma ligação aguardando contexto.")
+        return
+    await update.message.reply_text("Iniciando ligação sem avaliação de contexto...")
+    await _start_call(chat_id, pending["phone"], pending["context"], update)
 
 
 async def cmd_retentar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -304,22 +361,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     text = (update.message.text or "").strip()
+    chat_id = update.effective_chat.id
 
-    if PHONE_RE.match(text):
-        phone = re.sub(r"[\s\-]", "", text)
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            try:
-                r = await client.post(
-                    f"{AGENTE_URL}/api/bot/call/start",
-                    json={"phone_number": phone, "context": ""},
-                )
-                r.raise_for_status()
-                data = r.json()
-                reply = data if isinstance(data, str) else _fmt_json(data)
-                await update.message.reply_text(reply, parse_mode="Markdown")
-            except httpx.HTTPError as e:
-                logger.error("call/start error: %s", e)
-                await update.message.reply_text(f"Erro ao iniciar chamada: {e}")
+    if chat_id in _pending_calls:
+        pending = _pending_calls.pop(chat_id)
+        combined_context = f"{pending['context']} — {text}".strip(" —")
+        await update.message.reply_text("Contexto recebido. Iniciando ligação...")
+        await _start_call(chat_id, pending["phone"], combined_context, update)
+        return
+
+    if _PHONE_DETECT_RE.match(text):
+        try:
+            phone = sanitize_phone(text)
+        except ValueError:
+            await update.message.reply_text(
+                "Número inválido. Exemplo: `+5511999999999`", parse_mode="Markdown"
+            )
+            return
+        await _start_call(chat_id, phone, "ligar", update)
         return
 
     reply = await _cmd_ask(text)
