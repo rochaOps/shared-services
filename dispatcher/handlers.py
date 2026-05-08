@@ -15,6 +15,7 @@ PHONE_RE = re.compile(r"^\+?\d[\d\s\-]{7,15}$")
 
 HELP_TEXT = """Comandos disponíveis:
 
+/ligar <numero> [contexto] — inicia uma ligação
 /ask <pergunta> — pergunta ao assistente de IA (Ollama)
 /status — estado atual do agente
 /perfil — perfil configurado
@@ -70,6 +71,47 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return
     await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+
+
+async def cmd_ligar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "Uso: `/ligar <numero> [contexto opcional]`\nExemplo: `/ligar +5511999999999 agendar consulta`",
+            parse_mode="Markdown",
+        )
+        return
+
+    phone_raw = args[0]
+    phone = re.sub(r"[\s\-]", "", phone_raw)
+    if not re.match(r"^\+?\d{8,15}$", phone):
+        await update.message.reply_text(
+            "Numero invalido. Exemplo: `/ligar +5511999999999 agendar consulta`",
+            parse_mode="Markdown",
+        )
+        return
+
+    call_context = " ".join(args[1:]).strip() or "ligar"
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            r = await client.post(
+                f"{AGENTE_URL}/api/bot/call/start",
+                json={"phone_number": phone, "context": call_context},
+            )
+            r.raise_for_status()
+            data = r.json()
+            reply = data if isinstance(data, str) else _fmt_json(data)
+            await update.message.reply_text(reply, parse_mode="Markdown")
+        except httpx.HTTPStatusError as e:
+            detail = e.response.json().get("detail", str(e)) if e.response.content else str(e)
+            logger.error("ligar error: %s", e)
+            await update.message.reply_text(f"Erro ao iniciar ligacao: {detail}")
+        except httpx.HTTPError as e:
+            logger.error("ligar error: %s", e)
+            await update.message.reply_text(f"Erro ao iniciar ligacao: {e}")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

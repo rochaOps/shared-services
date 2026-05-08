@@ -4,6 +4,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from handlers import (
     cmd_start,
     cmd_help,
+    cmd_ligar,
     cmd_ask,
     cmd_status,
     cmd_perfil,
@@ -30,6 +31,7 @@ app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", cmd_start))
 app.add_handler(CommandHandler("help", cmd_help))
+app.add_handler(CommandHandler("ligar", cmd_ligar))
 app.add_handler(CommandHandler("ask", cmd_ask))
 app.add_handler(CommandHandler("status", cmd_status))
 app.add_handler(CommandHandler("perfil", cmd_perfil))
