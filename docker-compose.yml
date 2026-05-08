@@ -41,7 +41,7 @@ services:
       TZ: Asia/Tokyo
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
-      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_KEEP_ALIVE: "5m"
       OLLAMA_NUM_PARALLEL: "1"
     networks:
       - shared_net
